@@ -2,18 +2,24 @@ package main
 
 import (
 	"github.com/aybabtme/canlii"
+	"github.com/PuerkitoBio/goquery"
 	"io/ioutil"
 	"fmt"
 	"time"
 	"encoding/json"
 	"strings"
+	"net/http"
+	"regexp"
+	"errors"
+	"math/rand"
 )
 
 // STEPS TO PERFORM
 var createSearchResultsFile = false
 var createIntersectionFile = false
 var createCaseMetadataCollectionFile = false
-var filterByKeyword = true
+var filterByKeyword = false
+var downloadFullText = true
 
 
 func main() {
@@ -122,17 +128,19 @@ func main() {
 	}
 
 	// filter the cases of interest by keywords that have to do with sentencing
-	sentencingCases := CaseMetadataCollection{}
+	sentencingCases := FullCaseCollection{}
 	sentencingCasesFilename := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/sentencingCases.json"
 	if filterByKeyword {
 		for _, c := range caseMetadataCollection.Collection {
 			// if sentenc (sentencing, sentence) exists in the kewords, add to sentencing cases
 			if strings.Contains(c.Keywords, "sentenc") {
-				sentencingCases.Collection = append(sentencingCases.Collection, c)
+				t := FullCase{}
+				t.Metadata = c
+				sentencingCases.Collection = append(sentencingCases.Collection, &t)
 			}
 		}
 		resultsJson, _ := json.Marshal(sentencingCases)
-		fmt.Printf("Saving %d cases' metadata to %s\n", len(sentencingCases.Collection), sentencingCasesFilename)
+		fmt.Printf("Saving %d sentencing-related cases to %s\n", len(sentencingCases.Collection), sentencingCasesFilename)
 		err = ioutil.WriteFile(sentencingCasesFilename, resultsJson, 0644)
 	} else {
 		fmt.Printf("Reading sentencing cases from file at %s\n", sentencingCasesFilename)
@@ -140,8 +148,51 @@ func main() {
 		check(err)
 		err = json.Unmarshal(jsonBlob, &sentencingCases)
 		check(err)
-		fmt.Printf("Successfully read %d sentencing\n", len(sentencingCases.Collection))
+		fmt.Printf("Successfully read %d sentencing cases\n", len(sentencingCases.Collection))
 	}
+
+	if downloadFullText {
+		for _, c := range sentencingCases.Collection {
+			if c.FullText != "" {
+				continue
+			}
+			fmt.Printf("Getting full text for %s: %s (%s)\n", c.Metadata.CaseID, c.Metadata.Title, c.Metadata.DatabaseID)
+			fullText, err := downloadPage(c.Metadata.URL)
+			if err != nil {
+				break
+			}
+			whitespaceLeadingTrailing, err := regexp.Compile(`^[\s\p{Zs}]+|[\s\p{Zs}]+$`)
+			whitespaceExtraInterior, err := regexp.Compile(`[\s\p{Zs}]{2,}`)
+			fullText = whitespaceLeadingTrailing.ReplaceAllString(fullText, "")
+			fullText = whitespaceExtraInterior.ReplaceAllString(fullText, "")
+			c.FullText = fullText
+			time.Sleep(time.Duration((rand.Int31n(120) + 30)) * time.Second)
+		}
+		resultsJson, _ := json.Marshal(sentencingCases)
+		//fmt.Printf("Saving %d sentencing-related cases to %s\n", len(sentencingCases.Collection), sentencingCasesFilename)
+		err = ioutil.WriteFile(sentencingCasesFilename, resultsJson, 0644)
+	}
+}
+
+func downloadPage(url string) (string, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if (resp.StatusCode != 200) {
+		fmt.Printf("Http request error: %d %s\n", resp.StatusCode, resp.Status)
+		return "", errors.New(resp.Status)
+	}
+
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	//doc.Find(".documentcontent").Each(func(i int, s *goquery.Selection) {
+	//
+	//})
+	return doc.Find(".documentcontent").Text(), nil
 }
 
 func check(e error) {
@@ -188,6 +239,15 @@ func searchByKeyword(client *canlii.Client, keyword string, totalToGet int, init
 		time.Sleep(time.Millisecond * 500)
 	}
 	return cumulativeResults, nil
+}
+
+type FullCaseCollection struct {
+	Collection []*FullCase `json:"fullCases"`
+}
+
+type FullCase struct {
+	Metadata canlii.CaseMetadata `json:"caseMetadata"`
+	FullText string              `json:"fullText"`
 }
 
 type CaseMetadataCollection struct {
