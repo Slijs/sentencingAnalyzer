@@ -3,6 +3,7 @@ package main
 import (
 	"github.com/aybabtme/canlii"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/faiface/beep/wav"
 	"io/ioutil"
 	"fmt"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"regexp"
 	"errors"
 	"math/rand"
+	"os"
+	"github.com/faiface/beep/speaker"
 )
 
 // STEPS TO PERFORM
@@ -19,7 +22,9 @@ var createSearchResultsFile = false
 var createIntersectionFile = false
 var createCaseMetadataCollectionFile = false
 var filterByKeyword = false
-var downloadFullText = true
+var downloadFullText = false
+var generateLinkDocument = false
+var generateFromDownloadedHtml = false
 
 
 func main() {
@@ -159,6 +164,11 @@ func main() {
 			fmt.Printf("Getting full text for %s: %s (%s)\n", c.Metadata.CaseID, c.Metadata.Title, c.Metadata.DatabaseID)
 			fullText, err := downloadPage(c.Metadata.URL)
 			if err != nil {
+				f, _ := os.Open("/home/pbrink/go/src/sentencingAnalyzer/beep-01a.wav")
+				s, format, _ := wav.Decode(f)
+				speaker.Init(format.SampleRate, format.SampleRate.N(time.Second/10))
+				speaker.Play(s)
+				select {}
 				break
 			}
 			whitespaceLeadingTrailing, err := regexp.Compile(`^[\s\p{Zs}]+|[\s\p{Zs}]+$`)
@@ -166,11 +176,41 @@ func main() {
 			fullText = whitespaceLeadingTrailing.ReplaceAllString(fullText, "")
 			fullText = whitespaceExtraInterior.ReplaceAllString(fullText, "")
 			c.FullText = fullText
-			time.Sleep(time.Duration((rand.Int31n(120) + 30)) * time.Second)
+			resultsJson, _ := json.Marshal(sentencingCases)
+			//fmt.Printf("Saving %d sentencing-related cases to %s\n", len(sentencingCases.Collection), sentencingCasesFilename)
+			err = ioutil.WriteFile(sentencingCasesFilename, resultsJson, 0644)
+			//time.Sleep(time.Duration((rand.Int31n(120) + 30)) * time.Second)
+			time.Sleep(time.Duration((rand.Int31n(12) + 3)) * time.Second)
+		}
+		fmt.Printf("Got full text for %d cases", len(sentencingCases.Collection))
+	}
+
+	if generateLinkDocument {
+		var links []string
+		for _, c := range sentencingCases.Collection {
+			if c.FullText == "" {
+				linkHtml := fmt.Sprintf("<li><a href=\"%s\">%s</a></li>", c.Metadata.URL, c.Metadata.CaseID)
+				links = append(links, linkHtml)
+			}
+		}
+		listLinks := strings.Join(links, "\n")
+		linksFilename := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/links.txt"
+		err = ioutil.WriteFile(linksFilename, []byte(listLinks), 0644)
+	}
+
+	if generateFromDownloadedHtml {
+		generateFromHtmlOnDisk(&sentencingCases)
+		var count int
+		for _, c := range sentencingCases.Collection {
+			if c.FullText != "" {
+				count++
+			} else {
+				fmt.Println(c.Metadata.URL)
+			}
 		}
 		resultsJson, _ := json.Marshal(sentencingCases)
-		//fmt.Printf("Saving %d sentencing-related cases to %s\n", len(sentencingCases.Collection), sentencingCasesFilename)
 		err = ioutil.WriteFile(sentencingCasesFilename, resultsJson, 0644)
+		fmt.Printf("%d cases now contain full text\n", count)
 	}
 }
 
@@ -189,10 +229,42 @@ func downloadPage(url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	//doc.Find(".documentcontent").Each(func(i int, s *goquery.Selection) {
-	//
-	//})
 	return doc.Find(".documentcontent").Text(), nil
+}
+
+func generateFromHtmlOnDisk(collection *FullCaseCollection) {
+	directory := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/canliiHtml/"
+	files, _ := ioutil.ReadDir(directory)
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+		caseId := file.Name()
+		caseId = strings.Replace(caseId, "CanLII - ", "", -1)
+		caseId = strings.Replace(caseId, " (CanLII).html", "", -1)
+		dbInParens, _ := regexp.Compile(` \(.*\)\.html`)
+		caseId = dbInParens.ReplaceAllString(caseId, "")
+		caseId = strings.Replace(caseId, " ", "", -1)
+		caseId = strings.ToLower(caseId)
+
+		for _, c := range collection.Collection {
+			if c.Metadata.CaseID == caseId {
+				if c.FullText != "" {
+					break
+				}
+				//contents, _ := ioutil.ReadFile(directory + file.Name())
+				r, _ := os.Open(directory + file.Name())
+				doc, _ := goquery.NewDocumentFromReader(r)
+				fullText := doc.Find("div.documentcontent").Text()
+				whitespaceLeadingTrailing, _ := regexp.Compile(`^[\s\p{Zs}]+|[\s\p{Zs}]+$`)
+				whitespaceExtraInterior, _ := regexp.Compile(`[\s\p{Zs}]{2,}`)
+				fullText = whitespaceLeadingTrailing.ReplaceAllString(fullText, "")
+				fullText = whitespaceExtraInterior.ReplaceAllString(fullText, "")
+				c.FullText = fullText
+				break
+			}
+		}
+	}
 }
 
 func check(e error) {
