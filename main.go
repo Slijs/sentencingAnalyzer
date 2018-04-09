@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/aybabtme/canlii"
+	"github.com/Slijs/canlii"
 	"github.com/PuerkitoBio/goquery"
 	"io/ioutil"
 	"fmt"
@@ -16,10 +16,15 @@ import (
 
 // STEPS TO PERFORM
 var createSearchResultsFile = false
+var removeDuplicatesDuringSearch = false
 var createIntersectionFile = false
-var createCaseMetadataCollectionFile = false
-var filterByKeyword = false
-var downloadFullText = true
+var createCaseMetadataCollectionFile = true
+var filterByKeyword = true
+var downloadFullText = false
+var removeDuplicateMetadata = true
+var basePath = "/home/pbrink/Cloud/Hubic/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/20000-40000/"
+var totalResultsToGet = 20000
+var initialOffsetForSearch = 20000
 
 
 func main() {
@@ -31,12 +36,11 @@ func main() {
 
 	// Get search results
 	searchResults := canlii.SearchResult{}
-	searchResultsFilename := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/searchResults.json"
+	searchResultsFilename := basePath + "searchResults.json"
 	if createSearchResultsFile {
 		keyword := "sentencing"
-		totalResultsToGet := 20000
 		fmt.Printf("Searching canlii for '%s', max results %d\n", keyword, totalResultsToGet)
-		searchResults, err = searchByKeyword(canliiClient, keyword, totalResultsToGet, 0)
+		searchResults, err = searchByKeyword(canliiClient, keyword, totalResultsToGet, initialOffsetForSearch)
 		if err != nil {
 			fmt.Printf("Error: %s\n", err)
 		}
@@ -52,9 +56,37 @@ func main() {
 		fmt.Printf("Successfully read %d cases and %d legislations\n", len(searchResults.Cases), len(searchResults.Legislations))
 	}
 
+	if removeDuplicatesDuringSearch {
+		oldSearchResults := canlii.SearchResult{}
+		newSearchResults := canlii.SearchResult{}
+		oldSearchResultsFilename := basePath + "../20000/searchResults.json"
+		newSearchResultsFilename := basePath + "newSearchResults.json"
+		fmt.Printf("Reading search results from file at %s\n", oldSearchResultsFilename)
+		jsonBlob, err := ioutil.ReadFile(oldSearchResultsFilename)
+		check(err)
+		err = json.Unmarshal(jsonBlob, &oldSearchResults)
+		check(err)
+		fmt.Printf("Successfully read %d cases and %d legislations\n", len(oldSearchResults.Cases), len(oldSearchResults.Legislations))
+		for _, newCase := range searchResults.Cases {
+			isNew := true
+			for _, oldCase := range oldSearchResults.Cases {
+				if newCase.ID == oldCase.ID {
+					isNew = false
+					break
+				}
+			}
+			if isNew {
+				newSearchResults.Cases = append(newSearchResults.Cases, newCase)
+			}
+		}
+		resultsJson, _ := json.Marshal(newSearchResults)
+		fmt.Printf("Saving %d cases and %d legislations to %s\n", len(newSearchResults.Cases), len(newSearchResults.Legislations), newSearchResultsFilename)
+		err = ioutil.WriteFile(newSearchResultsFilename, resultsJson, 0644)
+	}
+
 	// Read databases file
 	databases := CaseDatabases{}
-	databasesFilename := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/databases.json"
+	databasesFilename := basePath + "../databases.json"
 	fmt.Printf("Reading databases from file at %s\n", databasesFilename)
 	jsonBlob, err := ioutil.ReadFile(databasesFilename)
 	check(err)
@@ -64,7 +96,7 @@ func main() {
 
 	// Get the intersection of the search results and the case databases that are interesting
 	interestingCases := canlii.SearchResult{}
-	interestingCasesFilename := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/interestingCases.json"
+	interestingCasesFilename := basePath + "interestingCases.json"
 	if createIntersectionFile {
 		// make a map of the databases
 		databaseMap := make(map[string]string)
@@ -94,9 +126,9 @@ func main() {
 
 	// Build the case metadata file
 	caseMetadataCollection := CaseMetadataCollection{}
-	caseMetadataCollectionFilename := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/caseMetadataCollection.json"
+	caseMetadataCollectionFilename := basePath + "caseMetadataCollection.json"
 	frenchCases := canlii.SearchResult{}
-	frenchCasesFilename := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/frenchCases.json"
+	frenchCasesFilename := basePath + "frenchCases.json"
 	if createCaseMetadataCollectionFile {
 		fmt.Printf("Getting case metadata for %d cases\n", len(interestingCases.Cases))
 		for _, c := range interestingCases.Cases {
@@ -129,7 +161,7 @@ func main() {
 
 	// filter the cases of interest by keywords that have to do with sentencing
 	sentencingCases := FullCaseCollection{}
-	sentencingCasesFilename := "/home/pbrink/Cloud/Documents/School Documents/2018.01-04/SOEN 498/Project/outputFromCanLii/sentencingCases.json"
+	sentencingCasesFilename := basePath + "sentencingCases.json"
 	if filterByKeyword {
 		for _, c := range caseMetadataCollection.Collection {
 			// if sentenc (sentencing, sentence) exists in the kewords, add to sentencing cases
@@ -171,6 +203,34 @@ func main() {
 		resultsJson, _ := json.Marshal(sentencingCases)
 		//fmt.Printf("Saving %d sentencing-related cases to %s\n", len(sentencingCases.Collection), sentencingCasesFilename)
 		err = ioutil.WriteFile(sentencingCasesFilename, resultsJson, 0644)
+	}
+
+	if removeDuplicateMetadata {
+		sentencingCasesPrevious := FullCaseCollection{}
+		sentencingCasesNew := FullCaseCollection{}
+		sentencingCasesPreviousFilename := basePath + "../20000/sentencingCases.json"
+		sentencingCasesNewFilename := basePath + "newSentencingCases.json"
+		fmt.Printf("Reading previous sentencing cases from file at %s\n", sentencingCasesPreviousFilename)
+		jsonBlob, err := ioutil.ReadFile(sentencingCasesPreviousFilename)
+		check(err)
+		err = json.Unmarshal(jsonBlob, &sentencingCasesPrevious)
+		check(err)
+		fmt.Printf("Successfully read %d previous sentencing cases\n", len(sentencingCasesPrevious.Collection))
+		for _, newCase := range sentencingCases.Collection {
+			isNewCase := true
+			for _, oldCase := range sentencingCasesPrevious.Collection {
+				if newCase.Metadata.CaseID == oldCase.Metadata.CaseID {
+					isNewCase = false
+					break
+				}
+			}
+			if isNewCase {
+				sentencingCasesNew.Collection = append(sentencingCasesNew.Collection, newCase)
+			}
+		}
+		resultsJson, _ := json.Marshal(sentencingCasesNew)
+		fmt.Printf("Saving %d new sentencing-related cases to %s\n", len(sentencingCasesNew.Collection), sentencingCasesNewFilename)
+		err = ioutil.WriteFile(sentencingCasesNewFilename, resultsJson, 0644)
 	}
 }
 
@@ -218,6 +278,7 @@ func searchByKeyword(client *canlii.Client, keyword string, totalToGet int, init
 	}
 
 	var cumulativeResults canlii.SearchResult
+	cumulativeReceived := 0
 
 	for i := 0; i < numLoops; i++ {
 		results, _, err := client.Search.Search(keyword, options)
@@ -231,6 +292,8 @@ func searchByKeyword(client *canlii.Client, keyword string, totalToGet int, init
 				}
 				cumulativeResults.TotalResults = results.TotalResults
 			}
+			cumulativeReceived += resultCount
+			fmt.Printf("%d received...\n", cumulativeReceived)
 			cumulativeResults.Cases = append(cumulativeResults.Cases, results.Cases...)
 			cumulativeResults.Legislations = append(cumulativeResults.Legislations, results.Legislations...)
 		}
